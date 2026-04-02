@@ -39,30 +39,26 @@ namespace MCPForUnity.Editor.Services.Server
                 return false;
             }
 
-            var (uvxPath, fromUrl, packageName) = AssetPathUtility.GetUvxCommandParts();
-            if (string.IsNullOrEmpty(uvxPath))
-            {
-                error = "uv is not installed or found in PATH. Install it or set an override in Advanced Settings.";
-                return false;
-            }
-
-            string devFlags = AssetPathUtility.GetUvxDevFlags();
             bool projectScopedTools = EditorPrefs.GetBool(
                 EditorPrefKeys.ProjectScopedToolsLocalHttp,
                 true
             );
-            string scopedFlag = projectScopedTools ? " --project-scoped-tools" : string.Empty;
+            string uvxPath = MCPServiceLocator.Paths.GetUvxPath();
+            if (!AssetPathUtility.TryGetPreferredHttpCommand(
+                    uvxPath,
+                    httpUrl,
+                    projectScopedTools,
+                    out var command,
+                    out var commandArgs,
+                    out error))
+            {
+                return false;
+            }
 
-            // Use centralized helper for beta server / prerelease args
-            string fromArgs = AssetPathUtility.GetBetaServerFromArgs(quoteFromPath: true);
-
-            string args = string.IsNullOrEmpty(fromArgs)
-                ? $"{devFlags}{packageName} --transport http --http-url {httpUrl}{scopedFlag}"
-                : $"{devFlags}{fromArgs} {packageName} --transport http --http-url {httpUrl}{scopedFlag}";
-
-            fileName = uvxPath;
+            string args = string.Join(" ", commandArgs.Select(QuoteIfNeeded));
+            fileName = command;
             arguments = args;
-            displayCommand = $"{QuoteIfNeeded(uvxPath)} {args}";
+            displayCommand = $"{QuoteIfNeeded(command)} {args}";
             return true;
         }
 

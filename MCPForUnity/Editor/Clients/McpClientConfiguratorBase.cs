@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Linq;
 using MCPForUnity.Editor.Constants;
 using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Models;
@@ -40,6 +41,25 @@ namespace MCPForUnity.Editor.Clients
         public abstract string GetManualSnippet();
         public abstract IList<string> GetInstallationSteps();
 
+        protected static string QuoteShellArgument(string value)
+        {
+            if (value == null) return "\"\"";
+
+            string escaped = value.Replace("\"", "\\\"");
+            return escaped.IndexOfAny(new[] { ' ', '\t', '"' }) >= 0 ? $"\"{escaped}\"" : escaped;
+        }
+
+        protected static string BuildShellInvocation(string command, IEnumerable<string> args)
+        {
+            if (string.IsNullOrEmpty(command))
+                return string.Empty;
+
+            var parts = new List<string> { QuoteShellArgument(command) };
+            if (args != null)
+                parts.AddRange(args.Select(QuoteShellArgument));
+            return string.Join(" ", parts);
+        }
+
         protected string GetUvxPathOrError()
         {
             string uvx = MCPServiceLocator.Paths.GetUvxPath();
@@ -48,6 +68,27 @@ namespace MCPForUnity.Editor.Clients
                 throw new InvalidOperationException("uvx not found. Install uv/uvx or set the override in Advanced Settings.");
             }
             return uvx;
+        }
+
+        protected string GetResolvedUvxPath()
+        {
+            return MCPServiceLocator.Paths.GetUvxPath();
+        }
+
+        protected bool UsesStdioTransportForCurrentClient()
+        {
+            bool preferHttpTransport = EditorConfigurationCache.Instance.UseHttpTransport;
+            bool clientSupportsHttp = client?.SupportsHttpTransport != false;
+            return !(clientSupportsHttp && preferHttpTransport);
+        }
+
+        protected void EnsurePreferredStdioCommandAvailable()
+        {
+            string uvxPath = GetResolvedUvxPath();
+            if (!AssetPathUtility.TryGetPreferredStdioCommand(uvxPath, out _, out _, out string error))
+            {
+                throw new InvalidOperationException(error ?? "Unable to build the stdio server command.");
+            }
         }
 
         protected string CurrentOsPath()
@@ -122,6 +163,76 @@ namespace MCPForUnity.Editor.Clients
 
             return false;
         }
+
+        protected static bool StdioConfigMatchesExpected(string configuredCommand, IReadOnlyList<string> configuredArgs)
+        {
+            if (string.IsNullOrWhiteSpace(configuredCommand) || configuredArgs == null)
+                return false;
+
+            string uvxPath = MCPServiceLocator.Paths.GetUvxPath();
+            if (!AssetPathUtility.TryGetPreferredStdioCommand(uvxPath, out var expectedCommand, out var expectedArgs, out _))
+                return false;
+
+            if (!StringEqualsForCurrentPlatform(configuredCommand, expectedCommand))
+                return false;
+
+            if (configuredArgs.Count != expectedArgs.Count)
+                return false;
+
+            for (int i = 0; i < configuredArgs.Count; i++)
+            {
+                if (!ArgumentMatches(configuredArgs[i], expectedArgs[i]))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool ArgumentMatches(string configuredValue, string expectedValue)
+        {
+            if (string.Equals(configuredValue, expectedValue, StringComparison.Ordinal))
+                return true;
+
+            if (LooksLikePath(configuredValue) || LooksLikePath(expectedValue))
+            {
+                if (McpConfigurationHelper.PathsEqual(configuredValue, expectedValue))
+                    return true;
+            }
+
+            return StringEqualsForCurrentPlatform(configuredValue, expectedValue);
+        }
+
+        private static bool LooksLikePath(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            if (value.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (value.IndexOfAny(new[] { '\\', '/' }) >= 0)
+                return true;
+
+            try
+            {
+                if (Path.IsPathRooted(value))
+                    return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+
+            return value.EndsWith(".py", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool StringEqualsForCurrentPlatform(string left, string right)
+        {
+            var comparison = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            return string.Equals(left, right, comparison);
+        }
     }
 
     /// <summary>JSON-file based configurator (Cursor, Windsurf, VS Code, etc.).</summary>
@@ -144,6 +255,7 @@ namespace MCPForUnity.Editor.Clients
                 }
 
                 string configJson = File.ReadAllText(path);
+                string configuredCommand = null;
                 string[] args = null;
                 string configuredUrl = null;
                 bool configExists = false;
@@ -167,6 +279,12 @@ namespace MCPForUnity.Editor.Clients
                                 args = argsToken.ToObject<string[]>();
                             }
 
+                            var commandToken = unityObj["command"];
+                            if (commandToken != null && commandToken.Type != JTokenType.Null)
+                            {
+                                configuredCommand = commandToken.ToString();
+                            }
+
                             var urlToken = unityObj["url"] ?? unityObj["serverUrl"];
                             if (urlToken != null && urlToken.Type != JTokenType.Null)
                             {
@@ -180,6 +298,7 @@ namespace MCPForUnity.Editor.Clients
                     McpConfig standardConfig = JsonConvert.DeserializeObject<McpConfig>(configJson);
                     if (standardConfig?.mcpServers?.unityMCP != null)
                     {
+                        configuredCommand = standardConfig.mcpServers.unityMCP.command;
                         args = standardConfig.mcpServers.unityMCP.args;
                         configuredUrl = standardConfig.mcpServers.unityMCP.url;
                         configExists = true;
@@ -223,9 +342,14 @@ namespace MCPForUnity.Editor.Clients
 
                 if (args != null && args.Length > 0)
                 {
+                    if (StdioConfigMatchesExpected(configuredCommand, args))
+                    {
+                        matches = true;
+                    }
+
                     // Use beta-aware expected package source for comparison
-                    string expectedUvxUrl = GetExpectedPackageSourceForValidation();
-                    string configuredUvxUrl = McpConfigurationHelper.ExtractUvxUrl(args);
+                    string expectedUvxUrl = matches ? null : GetExpectedPackageSourceForValidation();
+                    string configuredUvxUrl = matches ? null : McpConfigurationHelper.ExtractUvxUrl(args);
 
                     if (!string.IsNullOrEmpty(configuredUvxUrl) && !string.IsNullOrEmpty(expectedUvxUrl))
                     {
@@ -337,8 +461,10 @@ namespace MCPForUnity.Editor.Clients
         {
             try
             {
-                string uvx = GetUvxPathOrError();
-                return ConfigJsonBuilder.BuildManualConfigJson(uvx, client);
+                if (UsesStdioTransportForCurrentClient())
+                    EnsurePreferredStdioCommandAvailable();
+
+                return ConfigJsonBuilder.BuildManualConfigJson(GetResolvedUvxPath(), client);
             }
             catch (Exception ex)
             {
@@ -370,7 +496,7 @@ namespace MCPForUnity.Editor.Clients
                 }
 
                 string toml = File.ReadAllText(path);
-                if (CodexConfigHelper.TryParseCodexServer(toml, out _, out var args, out var url))
+                if (CodexConfigHelper.TryParseCodexServer(toml, out var configuredCommand, out var args, out var url))
                 {
                     // Determine and set the configured transport type
                     if (!string.IsNullOrEmpty(url))
@@ -406,9 +532,14 @@ namespace MCPForUnity.Editor.Clients
                     }
                     else if (args != null && args.Length > 0)
                     {
+                        if (StdioConfigMatchesExpected(configuredCommand, args))
+                        {
+                            matches = true;
+                        }
+
                         // Use beta-aware expected package source for comparison
-                        string expected = GetExpectedPackageSourceForValidation();
-                        string configured = McpConfigurationHelper.ExtractUvxUrl(args);
+                        string expected = matches ? null : GetExpectedPackageSourceForValidation();
+                        string configured = matches ? null : McpConfigurationHelper.ExtractUvxUrl(args);
 
                         if (!string.IsNullOrEmpty(configured) && !string.IsNullOrEmpty(expected))
                         {
@@ -515,8 +646,10 @@ namespace MCPForUnity.Editor.Clients
         {
             try
             {
-                string uvx = GetUvxPathOrError();
-                return CodexConfigHelper.BuildCodexServerBlock(uvx);
+                if (UsesStdioTransportForCurrentClient())
+                    EnsurePreferredStdioCommandAvailable();
+
+                return CodexConfigHelper.BuildCodexServerBlock(GetResolvedUvxPath());
             }
             catch (Exception ex)
             {
@@ -773,7 +906,7 @@ namespace MCPForUnity.Editor.Clients
         public void ConfigureWithCapturedValues(
             string projectDir, string claudePath, string pathPrepend,
             bool useHttpTransport, string httpUrl,
-            string uvxPath, string fromArgs, string packageName, string uvxDevFlags,
+            string stdioCommand, string[] stdioArgs, string stdioError,
             string apiKey,
             Models.ConfiguredTransport serverTransport)
         {
@@ -784,7 +917,7 @@ namespace MCPForUnity.Editor.Clients
             else
             {
                 RegisterWithCapturedValues(projectDir, claudePath, pathPrepend,
-                    useHttpTransport, httpUrl, uvxPath, fromArgs, packageName, uvxDevFlags,
+                    useHttpTransport, httpUrl, stdioCommand, stdioArgs, stdioError,
                     apiKey, serverTransport);
             }
         }
@@ -795,7 +928,7 @@ namespace MCPForUnity.Editor.Clients
         private void RegisterWithCapturedValues(
             string projectDir, string claudePath, string pathPrepend,
             bool useHttpTransport, string httpUrl,
-            string uvxPath, string fromArgs, string packageName, string uvxDevFlags,
+            string stdioCommand, string[] stdioArgs, string stdioError,
             string apiKey,
             Models.ConfiguredTransport serverTransport)
         {
@@ -821,8 +954,12 @@ namespace MCPForUnity.Editor.Clients
             }
             else
             {
-                // Use --scope local to register in the project-local config, avoiding conflicts with user-level config (#664)
-                args = $"mcp add --scope local --transport stdio UnityMCP -- \"{uvxPath}\" {uvxDevFlags}{fromArgs} {packageName}";
+                if (string.IsNullOrEmpty(stdioCommand) || stdioArgs == null || stdioArgs.Length == 0)
+                {
+                    throw new InvalidOperationException(stdioError ?? "Failed to construct stdio server command.");
+                }
+
+                args = $"mcp add --scope local --transport stdio UnityMCP -- {BuildShellInvocation(stdioCommand, stdioArgs)}";
             }
 
             // Remove any existing registrations from ALL scopes to prevent stale config conflicts (#664)
@@ -896,11 +1033,13 @@ namespace MCPForUnity.Editor.Clients
             }
             else
             {
-                var (uvxPath, _, packageName) = AssetPathUtility.GetUvxCommandParts();
-                string devFlags = AssetPathUtility.GetUvxDevFlags();
-                string fromArgs = AssetPathUtility.GetBetaServerFromArgs(quoteFromPath: true);
-                // Use --scope local to register in the project-local config, avoiding conflicts with user-level config (#664)
-                args = $"mcp add --scope local --transport stdio UnityMCP -- \"{uvxPath}\" {devFlags}{fromArgs} {packageName}";
+                string uvxPath = MCPServiceLocator.Paths.GetUvxPath();
+                if (!AssetPathUtility.TryGetPreferredStdioCommand(uvxPath, out var stdioCommand, out var stdioArgs, out var stdioError))
+                {
+                    throw new InvalidOperationException(stdioError ?? "Failed to construct stdio server command.");
+                }
+
+                args = $"mcp add --scope local --transport stdio UnityMCP -- {BuildShellInvocation(stdioCommand, stdioArgs)}";
             }
 
             string projectDir = GetClientProjectDir();
@@ -977,7 +1116,6 @@ namespace MCPForUnity.Editor.Clients
 
         public override string GetManualSnippet()
         {
-            string uvxPath = MCPServiceLocator.Paths.GetUvxPath();
             bool useHttpTransport = EditorConfigurationCache.Instance.UseHttpTransport;
 
             if (useHttpTransport)
@@ -1000,16 +1138,14 @@ namespace MCPForUnity.Editor.Clients
                        "claude mcp list";
             }
 
-            if (string.IsNullOrEmpty(uvxPath))
+            string uvxPath = MCPServiceLocator.Paths.GetUvxPath();
+            if (!AssetPathUtility.TryGetPreferredStdioCommand(uvxPath, out var stdioCommand, out var stdioArgs, out var stdioError))
             {
-                return "# Error: Configuration not available - check paths in Advanced Settings";
+                return "# Error: Configuration not available - " + (stdioError ?? "check paths in Advanced Settings");
             }
 
-            string devFlags = AssetPathUtility.GetUvxDevFlags();
-            string fromArgs = AssetPathUtility.GetBetaServerFromArgs(quoteFromPath: true);
-
             return "# Register the MCP server with Claude Code:\n" +
-                   $"claude mcp add --scope local --transport stdio UnityMCP -- \"{uvxPath}\" {devFlags}{fromArgs} mcp-for-unity\n\n" +
+                   $"claude mcp add --scope local --transport stdio UnityMCP -- {BuildShellInvocation(stdioCommand, stdioArgs)}\n\n" +
                    "# Unregister the MCP server (from all scopes to clean up any stale configs):\n" +
                    "claude mcp remove --scope local UnityMCP\n" +
                    "claude mcp remove --scope user UnityMCP\n" +

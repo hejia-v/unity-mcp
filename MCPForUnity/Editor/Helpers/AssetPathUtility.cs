@@ -576,6 +576,206 @@ namespace MCPForUnity.Editor.Helpers
         }
 
         /// <summary>
+        /// Gets the Python entry script for a local server checkout.
+        /// Supports the current src/main.py layout and older legacy layouts.
+        /// </summary>
+        public static string GetLocalServerEntryScriptPath()
+        {
+            string localPath = GetLocalServerPath();
+            if (string.IsNullOrEmpty(localPath))
+                return null;
+
+            string[] candidates =
+            {
+                System.IO.Path.Combine(localPath, "src", "main.py"),
+                System.IO.Path.Combine(localPath, "main.py"),
+                System.IO.Path.Combine(localPath, "server.py"),
+            };
+
+            foreach (string candidate in candidates)
+            {
+                if (System.IO.File.Exists(candidate))
+                    return candidate;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Resolves the preferred system Python executable for launching a local server checkout.
+        /// Returns a full path when available, otherwise a bare command if detection succeeded.
+        /// </summary>
+        public static string GetPreferredPythonCommand()
+        {
+#if UNITY_EDITOR_WIN
+            string python = ExecPath.FindInPathWindows("python.exe")
+                            ?? ExecPath.FindInPathWindows("python3.exe");
+            if (!string.IsNullOrEmpty(python))
+                return python;
+
+            return MCPServiceLocator.Paths.IsPythonDetected() ? "python.exe" : null;
+#elif UNITY_EDITOR_OSX || UNITY_EDITOR_LINUX
+            string python = ExecPath.FindInPath("python3")
+                            ?? ExecPath.FindInPath("python");
+            if (!string.IsNullOrEmpty(python))
+                return python;
+
+            return MCPServiceLocator.Paths.IsPythonDetected() ? "python3" : null;
+#else
+            return MCPServiceLocator.Paths.IsPythonDetected() ? "python" : null;
+#endif
+        }
+
+        /// <summary>
+        /// Builds a Python command line for launching the local server checkout directly.
+        /// Returns false when local-source mode is not active or the local checkout is incomplete.
+        /// </summary>
+        public static bool TryGetLocalPythonCommand(
+            string transport,
+            string httpUrl,
+            bool projectScopedTools,
+            out string command,
+            out IList<string> args,
+            out string error)
+        {
+            command = null;
+            args = null;
+            error = null;
+
+            if (!IsLocalServerPath())
+                return false;
+
+            string entryScript = GetLocalServerEntryScriptPath();
+            if (string.IsNullOrEmpty(entryScript))
+            {
+                error = $"Local MCP server source is configured at '{GetLocalServerPath()}', but no Python entry script was found. " +
+                        "Expected one of: src/main.py, main.py, or server.py.";
+                return false;
+            }
+
+            command = GetPreferredPythonCommand();
+            if (string.IsNullOrEmpty(command))
+            {
+                error = "Python 3.10+ is required to launch the local MCP server source directly. " +
+                        "Install Python or make sure it is available on PATH.";
+                return false;
+            }
+
+            var builtArgs = new List<string>
+            {
+                entryScript,
+                "--transport",
+                transport
+            };
+
+            if (string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrEmpty(httpUrl))
+                {
+                    error = "HTTP launch requires a valid --http-url value.";
+                    command = null;
+                    return false;
+                }
+
+                builtArgs.Add("--http-url");
+                builtArgs.Add(httpUrl);
+
+                if (projectScopedTools)
+                    builtArgs.Add("--project-scoped-tools");
+            }
+
+            args = builtArgs;
+            return true;
+        }
+
+        /// <summary>
+        /// Builds the preferred stdio launch command. Local source overrides prefer
+        /// direct Python execution; all other modes fall back to uvx.
+        /// </summary>
+        public static bool TryGetPreferredStdioCommand(
+            string uvxPath,
+            out string command,
+            out IList<string> args,
+            out string error)
+        {
+            if (TryGetLocalPythonCommand("stdio", null, false, out command, out args, out error))
+                return true;
+
+            if (IsLocalServerPath())
+                return false;
+
+            command = null;
+            args = null;
+            error = null;
+
+            if (string.IsNullOrEmpty(uvxPath))
+            {
+                error = "uv is not installed or found in PATH. Install it or set an override in Advanced Settings.";
+                return false;
+            }
+
+            var builtArgs = new List<string>();
+            foreach (var flag in GetUvxDevFlagsList())
+                builtArgs.Add(flag);
+            foreach (var arg in GetBetaServerFromArgsList())
+                builtArgs.Add(arg);
+            builtArgs.Add("mcp-for-unity");
+            builtArgs.Add("--transport");
+            builtArgs.Add("stdio");
+
+            command = uvxPath;
+            args = builtArgs;
+            return true;
+        }
+
+        /// <summary>
+        /// Builds the preferred HTTP launch command for Unity-managed local server start.
+        /// Local source overrides prefer direct Python execution; all other modes fall back to uvx.
+        /// </summary>
+        public static bool TryGetPreferredHttpCommand(
+            string uvxPath,
+            string httpUrl,
+            bool projectScopedTools,
+            out string command,
+            out IList<string> args,
+            out string error)
+        {
+            if (TryGetLocalPythonCommand("http", httpUrl, projectScopedTools, out command, out args, out error))
+                return true;
+
+            if (IsLocalServerPath())
+                return false;
+
+            command = null;
+            args = null;
+            error = null;
+
+            if (string.IsNullOrEmpty(uvxPath))
+            {
+                error = "uv is not installed or found in PATH. Install it or set an override in Advanced Settings.";
+                return false;
+            }
+
+            var builtArgs = new List<string>();
+            foreach (var flag in GetUvxDevFlagsList())
+                builtArgs.Add(flag);
+            foreach (var arg in GetBetaServerFromArgsList())
+                builtArgs.Add(arg);
+            builtArgs.Add("mcp-for-unity");
+            builtArgs.Add("--transport");
+            builtArgs.Add("http");
+            builtArgs.Add("--http-url");
+            builtArgs.Add(httpUrl);
+
+            if (projectScopedTools)
+                builtArgs.Add("--project-scoped-tools");
+
+            command = uvxPath;
+            args = builtArgs;
+            return true;
+        }
+
+        /// <summary>
         /// Cleans stale Python build artifacts from the local server path.
         /// This is necessary because Python's build system doesn't remove deleted files from build/,
         /// and the auto-discovery mechanism will pick up old .py files causing ghost resources/tools.

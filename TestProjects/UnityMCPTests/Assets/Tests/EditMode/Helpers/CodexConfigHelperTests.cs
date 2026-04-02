@@ -514,6 +514,50 @@ namespace MCPForUnityTests.Editor.Helpers
         }
 
         [Test]
+        public void BuildCodexServerBlock_LocalSourceStdio_UsesPythonCommand()
+        {
+            EditorPrefs.SetBool(EditorPrefKeys.UseHttpTransport, false);
+
+            string tempRoot = Path.Combine(Path.GetTempPath(), "UnityMCPTests", System.Guid.NewGuid().ToString("N"));
+            string serverRoot = Path.Combine(tempRoot, "Server");
+            string srcDir = Path.Combine(serverRoot, "src");
+            Directory.CreateDirectory(srcDir);
+            File.WriteAllText(Path.Combine(srcDir, "main.py"), "print('test')\n");
+            EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, serverRoot);
+
+            try
+            {
+                string result = CodexConfigHelper.BuildCodexServerBlock("unused");
+
+                TomlTable parsed;
+                using (var reader = new StringReader(result))
+                {
+                    parsed = TOML.Parse(reader);
+                }
+
+                var unityMcp = ((parsed["mcp_servers"] as TomlTable)?["unityMCP"] as TomlTable);
+                Assert.NotNull(unityMcp, "unityMCP table should exist");
+
+                string command = ((TomlString)unityMcp["command"]).Value;
+                Assert.That(command.ToLowerInvariant(), Does.Contain("python"));
+
+                var args = unityMcp["args"] as TomlArray;
+                var argValues = new List<string>();
+                foreach (TomlNode child in args.Children)
+                    argValues.Add((child as TomlString).Value);
+
+                Assert.That(argValues[0], Does.Contain("main.py"));
+                CollectionAssert.Contains(argValues, "--transport");
+                CollectionAssert.Contains(argValues, "stdio");
+            }
+            finally
+            {
+                EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
+                try { if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true); } catch { }
+            }
+        }
+
+        [Test]
         public void TryParseCodexServer_HttpMode_ParsesUrlSuccessfully()
         {
             // This test verifies HTTP mode parsing with url field

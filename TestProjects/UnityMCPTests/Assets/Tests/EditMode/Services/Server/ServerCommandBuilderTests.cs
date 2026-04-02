@@ -3,6 +3,8 @@ using MCPForUnity.Editor.Services;
 using MCPForUnity.Editor.Services.Server;
 using MCPForUnity.Editor.Constants;
 using UnityEditor;
+using System;
+using System.IO;
 
 namespace MCPForUnityTests.Editor.Services.Server
 {
@@ -15,6 +17,8 @@ namespace MCPForUnityTests.Editor.Services.Server
         private ServerCommandBuilder _builder;
         private bool _savedUseHttpTransport;
         private string _savedHttpUrl;
+        private bool _hadGitOverride;
+        private string _savedGitOverride;
 
         [SetUp]
         public void SetUp()
@@ -23,6 +27,8 @@ namespace MCPForUnityTests.Editor.Services.Server
             // Save current settings
             _savedUseHttpTransport = EditorPrefs.GetBool(EditorPrefKeys.UseHttpTransport, true);
             _savedHttpUrl = EditorPrefs.GetString(EditorPrefKeys.HttpBaseUrl, string.Empty);
+            _hadGitOverride = EditorPrefs.HasKey(EditorPrefKeys.GitUrlOverride);
+            _savedGitOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, string.Empty);
         }
 
         [TearDown]
@@ -37,6 +43,14 @@ namespace MCPForUnityTests.Editor.Services.Server
             else
             {
                 EditorPrefs.DeleteKey(EditorPrefKeys.HttpBaseUrl);
+            }
+            if (_hadGitOverride)
+            {
+                EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, _savedGitOverride);
+            }
+            else
+            {
+                EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
             }
             // Refresh cache to reflect restored values
             EditorConfigurationCache.Instance.Refresh();
@@ -281,6 +295,39 @@ namespace MCPForUnityTests.Editor.Services.Server
             }
 
             Assert.Pass($"TryBuildCommand: success={result}, error={error ?? "null"}");
+        }
+
+        [Test]
+        public void TryBuildCommand_LocalSourceOverride_UsesPythonLauncher()
+        {
+            string tempRoot = Path.Combine(Path.GetTempPath(), "UnityMCPTests", Guid.NewGuid().ToString("N"));
+            string serverRoot = Path.Combine(tempRoot, "Server");
+            string srcDir = Path.Combine(serverRoot, "src");
+            Directory.CreateDirectory(srcDir);
+            File.WriteAllText(Path.Combine(srcDir, "main.py"), "print('test')\n");
+
+            try
+            {
+                EditorPrefs.SetBool(EditorPrefKeys.UseHttpTransport, true);
+                EditorPrefs.SetString(EditorPrefKeys.HttpBaseUrl, "http://localhost:8080");
+                EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, serverRoot);
+                EditorConfigurationCache.Instance.Refresh();
+
+                bool result = _builder.TryBuildCommand(out string fileName, out string arguments, out string displayCommand, out string error);
+
+                Assert.IsTrue(result, error);
+                Assert.IsNotNull(fileName);
+                Assert.That(fileName.ToLowerInvariant(), Does.Contain("python"));
+                Assert.That(arguments, Does.Contain("main.py"));
+                Assert.That(arguments, Does.Contain("--transport"));
+                Assert.That(arguments, Does.Contain("http"));
+                Assert.That(arguments, Does.Contain("--http-url"));
+                Assert.That(displayCommand, Does.Contain("main.py"));
+            }
+            finally
+            {
+                try { if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true); } catch { }
+            }
         }
 
         [Test]

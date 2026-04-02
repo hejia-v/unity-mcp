@@ -27,6 +27,8 @@ namespace MCPForUnityTests.Editor.Helpers
         private bool _originalHttpTransport;
         private bool _hadHttpUrl;
         private string _originalHttpUrl;
+        private bool _hadGitOverride;
+        private string _originalGitOverride;
 
         [SetUp]
         public void SetUp()
@@ -36,6 +38,8 @@ namespace MCPForUnityTests.Editor.Helpers
             _originalHttpTransport = EditorPrefs.GetBool(UseHttpTransportPrefKey, true);
             _hadHttpUrl = EditorPrefs.HasKey(HttpUrlPrefKey);
             _originalHttpUrl = EditorPrefs.GetString(HttpUrlPrefKey, "");
+            _hadGitOverride = EditorPrefs.HasKey(EditorPrefKeys.GitUrlOverride);
+            _originalGitOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
 
             // Tests are designed for Linux/macOS runners. Skip on Windows due to ProcessStartInfo
             // restrictions when UseShellExecute=false for .cmd/.bat scripts.
@@ -87,6 +91,11 @@ namespace MCPForUnityTests.Editor.Helpers
                 EditorPrefs.SetString(HttpUrlPrefKey, _originalHttpUrl);
             else
                 EditorPrefs.DeleteKey(HttpUrlPrefKey);
+
+            if (_hadGitOverride)
+                EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, _originalGitOverride);
+            else
+                EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
 
             // Remove temp files
             try { if (Directory.Exists(_tempRoot)) Directory.Delete(_tempRoot, true); } catch { }
@@ -338,6 +347,35 @@ namespace MCPForUnityTests.Editor.Helpers
                 var unity = (JObject)root.SelectToken("servers.unityMCP");
                 Assert.NotNull(unity, "Expected servers.unityMCP node");
                 AssertTransportConfiguration(unity, client);
+            });
+        }
+
+        [Test]
+        public void UsesPythonCommand_ForLocalSourceOverride_WhenPreferenceDisabled()
+        {
+            var configPath = Path.Combine(_tempRoot, "stdio-local-python.json");
+            WriteInitialConfig(configPath, isVSCode: false, command: _fakeUvPath, directory: "/old/path");
+
+            string localServerRoot = Path.Combine(_tempRoot, "local-server");
+            Directory.CreateDirectory(Path.Combine(localServerRoot, "src"));
+            File.WriteAllText(Path.Combine(localServerRoot, "src", "main.py"), "print('test')\n");
+            EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, localServerRoot);
+
+            WithTransportPreference(false, () =>
+            {
+                var client = new McpClient { name = "Cursor" };
+                InvokeWriteToConfig(configPath, client);
+
+                var root = JObject.Parse(File.ReadAllText(configPath));
+                var unity = (JObject)root.SelectToken("mcpServers.unityMCP");
+                Assert.NotNull(unity, "Expected mcpServers.unityMCP node");
+                Assert.That(((string)unity["command"]).ToLowerInvariant(), Does.Contain("python"));
+
+                var args = (unity["args"] as JArray)?.ToObject<string[]>();
+                Assert.NotNull(args, "stdio transport should include args array");
+                Assert.That(args[0], Does.Contain("main.py"));
+                CollectionAssert.Contains(args, "--transport");
+                CollectionAssert.Contains(args, "stdio");
             });
         }
 

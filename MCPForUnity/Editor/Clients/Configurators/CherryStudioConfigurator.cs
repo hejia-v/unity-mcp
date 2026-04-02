@@ -32,7 +32,7 @@ namespace MCPForUnity.Editor.Clients.Configurators
             "For STDIO mode (recommended):",
             "  - Name: unity-mcp",
             "  - Type: STDIO",
-            "  - Command: uvx",
+            "  - Command: Copy the 'command' value from the Manual Configuration JSON below",
             "  - Arguments: Copy from the Manual Configuration JSON below",
             "Click Save and restart Cherry Studio",
             "",

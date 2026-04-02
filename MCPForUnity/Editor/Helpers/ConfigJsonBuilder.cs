@@ -41,7 +41,7 @@ namespace MCPForUnity.Editor.Helpers
 
         /// <summary>
         /// Centralized builder that applies all caveats consistently.
-        /// - Sets command/args with uvx and package version
+        /// - Sets command/args for the active server source (local Python or uvx package launch)
         /// - Ensures env exists
         /// - Adds transport configuration (HTTP or stdio)
         /// - Adds disabled:false for Windsurf/Kiro only when missing
@@ -106,13 +106,20 @@ namespace MCPForUnity.Editor.Helpers
             }
             else
             {
-                // Stdio mode: Use uvx command
-                var (uvxPath, fromUrl, packageName) = AssetPathUtility.GetUvxCommandParts();
+                if (AssetPathUtility.TryGetPreferredStdioCommand(uvPath, out var command, out var toolArgs, out _))
+                {
+                    unity["command"] = command;
+                    unity["args"] = JArray.FromObject(toolArgs.ToArray());
+                }
+                else
+                {
+                    // Fallback to legacy uvx generation when the local Python source is not usable.
+                    var (uvxPath, fromUrl, packageName) = AssetPathUtility.GetUvxCommandParts();
+                    var fallbackArgs = BuildUvxArgs(fromUrl, packageName);
 
-                var toolArgs = BuildUvxArgs(fromUrl, packageName);
-
-                unity["command"] = uvxPath;
-                unity["args"] = JArray.FromObject(toolArgs.ToArray());
+                    unity["command"] = uvxPath;
+                    unity["args"] = JArray.FromObject(fallbackArgs.ToArray());
+                }
 
                 // Remove url/serverUrl if they exist from previous config
                 if (unity["url"] != null) unity.Remove("url");

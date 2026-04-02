@@ -348,9 +348,9 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
             bool useHttpTransport = EditorConfigurationCache.Instance.UseHttpTransport;
             string claudePath = MCPServiceLocator.Paths.GetClaudeCliPath();
             string httpUrl = HttpEndpointUtility.GetMcpRpcUrl();
-            var (uvxPath, _, packageName) = AssetPathUtility.GetUvxCommandParts();
-            string fromArgs = AssetPathUtility.GetBetaServerFromArgs(quoteFromPath: true);
-            string uvxDevFlags = AssetPathUtility.GetUvxDevFlags();
+            string uvxPath = MCPServiceLocator.Paths.GetUvxPath();
+            AssetPathUtility.TryGetPreferredStdioCommand(uvxPath, out var stdioCommand, out var stdioArgsList, out var stdioError);
+            string[] stdioArgs = stdioArgsList?.ToArray();
             string apiKey = EditorPrefs.GetString(EditorPrefKeys.ApiKey, string.Empty);
 
             // Compute pathPrepend on main thread
@@ -377,7 +377,7 @@ namespace MCPForUnity.Editor.Windows.Components.ClientConfig
                         cliConfigurator.ConfigureWithCapturedValues(
                             projectDir, claudePath, pathPrepend,
                             useHttpTransport, httpUrl,
-                            uvxPath, fromArgs, packageName, uvxDevFlags,
+                            stdioCommand, stdioArgs, stdioError,
                             apiKey, serverTransport);
                     }
                     return (success: true, error: (string)null);

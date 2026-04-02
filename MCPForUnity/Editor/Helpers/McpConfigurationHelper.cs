@@ -96,8 +96,13 @@ namespace MCPForUnity.Editor.Helpers
             catch { }
 
             // 1) Start from existing, only fill gaps (prefer trusted resolver)
+            bool needsStdioCommand = !EditorConfigurationCache.Instance.UseHttpTransport || mcpClient?.SupportsHttpTransport == false;
             string uvxPath = MCPServiceLocator.Paths.GetUvxPath();
-            if (uvxPath == null) return "uv package manager not found. Please install uv first.";
+            if (needsStdioCommand &&
+                !AssetPathUtility.TryGetPreferredStdioCommand(uvxPath, out _, out _, out string stdioError))
+            {
+                return stdioError ?? "Unable to build the stdio server command.";
+            }
 
             // Ensure containers exist and write back configuration
             JObject existingRoot;
@@ -150,9 +155,10 @@ namespace MCPForUnity.Editor.Helpers
             }
 
             string uvxPath = MCPServiceLocator.Paths.GetUvxPath();
-            if (uvxPath == null)
+            if (!EditorConfigurationCache.Instance.UseHttpTransport &&
+                !AssetPathUtility.TryGetPreferredStdioCommand(uvxPath, out _, out _, out string stdioError))
             {
-                return "uv package manager not found. Please install uv first.";
+                return stdioError ?? "Unable to build the stdio server command.";
             }
 
             string updatedToml = CodexConfigHelper.UpsertCodexServerBlock(existingToml, uvxPath);
