@@ -27,6 +27,68 @@ Before applying a template:
 5. Verify results         → read_console, manage_camera(action="screenshot"), resources
 ```
 
+## Project Custom Tool: `fr2_asset_index`
+
+DropEscape provides a project-scoped custom tool for AI-driven asset cleanup and reference analysis:
+
+- `ping`
+- `status`
+- `sync`
+- `get_used_by`
+- `get_uses`
+- `get_unused`
+- `is_in_build`
+
+Use it through `execute_custom_tool`, not by driving the FindReference2 UI.
+
+### Required workflow after asset changes
+
+If you create, move, rename, replace, or delete assets and then need dependency results:
+
+1. Finish the write batch first.
+2. Call `execute_custom_tool(tool_name="fr2_asset_index", parameters={"action":"sync"})`
+3. Poll `action="status"` until the response reports ready.
+4. Only then run `get_used_by`, `get_uses`, `get_unused`, or `is_in_build`.
+
+Do not query FR2 immediately after each individual asset write. Treat FR2 as an asynchronous index, not a synchronous lookup.
+
+### Project safety defaults
+
+- Default scope is `Assets/Game`
+- Default exclude root is `Assets/Old`
+
+Unless the user explicitly asks otherwise, keep those defaults in place for cleanup analysis.
+
+### Example calls
+
+```python
+execute_custom_tool(
+    tool_name="fr2_asset_index",
+    parameters={"action": "sync"}
+)
+
+execute_custom_tool(
+    tool_name="fr2_asset_index",
+    parameters={"action": "status"}
+)
+
+execute_custom_tool(
+    tool_name="fr2_asset_index",
+    parameters={
+        "action": "get_used_by",
+        "targets": ["Assets/Game/UI/Prefab/Launch.prefab"],
+        "sort": "path"
+    }
+)
+
+execute_custom_tool(
+    tool_name="fr2_asset_index",
+    parameters={
+        "action": "get_unused"
+    }
+)
+```
+
 ## Critical Best Practices
 
 ### 1. After Writing/Editing Scripts: Wait for Compilation and Check Console
